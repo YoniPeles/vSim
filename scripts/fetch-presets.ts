@@ -1,0 +1,113 @@
+// Snapshots config.json (+ hf_quant_config.json, + HF API safetensors param counts) for the bundled
+// model presets, so the app works offline and for gated repos.
+// Usage: node scripts/fetch-presets.ts   (token from $HF_TOKEN or ~/.cache/huggingface/token)
+import { writeFile, mkdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+
+interface PresetSource {
+  /** Repo id shown to users. */
+  repo: string;
+  /** Ungated mirror, used when `repo` is gated and no token is available. */
+  mirror?: string;
+  label: string;
+}
+
+const PRESETS: PresetSource[] = [
+  { repo: 'meta-llama/Llama-3.1-8B-Instruct', mirror: 'unsloth/Llama-3.1-8B-Instruct', label: 'Llama 3.1 8B' },
+  { repo: 'meta-llama/Llama-3.3-70B-Instruct', mirror: 'unsloth/Llama-3.3-70B-Instruct', label: 'Llama 3.3 70B' },
+  { repo: 'RedHatAI/Meta-Llama-3.1-405B-Instruct-FP8', label: 'Llama 3.1 405B FP8 (compressed-tensors)' },
+  { repo: 'hugging-quants/Meta-Llama-3.1-405B-Instruct-AWQ-INT4', label: 'Llama 3.1 405B AWQ INT4' },
+  { repo: 'Qwen/Qwen3-8B', label: 'Qwen3 8B' },
+  { repo: 'Qwen/Qwen3-32B', label: 'Qwen3 32B' },
+  { repo: 'Qwen/Qwen3-30B-A3B', label: 'Qwen3 30B-A3B (MoE)' },
+  { repo: 'Qwen/Qwen3-235B-A22B', label: 'Qwen3 235B-A22B (MoE)' },
+  { repo: 'Qwen/Qwen3-235B-A22B-Instruct-2507-FP8', label: 'Qwen3 235B-A22B FP8' },
+  { repo: 'Qwen/Qwen3-Next-80B-A3B-Instruct', label: 'Qwen3-Next 80B-A3B (hybrid linear)' },
+  { repo: 'mistralai/Mixtral-8x7B-Instruct-v0.1', label: 'Mixtral 8x7B' },
+  { repo: 'deepseek-ai/DeepSeek-V3', label: 'DeepSeek V3 (MLA + MoE, FP8)' },
+  { repo: 'deepseek-ai/DeepSeek-R1-0528', label: 'DeepSeek R1 0528' },
+  { repo: 'deepseek-ai/DeepSeek-V3.2', label: 'DeepSeek V3.2 (sparse attention)' },
+  { repo: 'nvidia/DeepSeek-R1-0528-FP4', label: 'DeepSeek R1 NVFP4 (ModelOpt)' },
+  { repo: 'moonshotai/Kimi-K2-Instruct', label: 'Kimi K2 (1T MoE)' },
+  { repo: 'openai/gpt-oss-20b', label: 'gpt-oss 20B (MXFP4)' },
+  { repo: 'openai/gpt-oss-120b', label: 'gpt-oss 120B (MXFP4)' },
+  { repo: 'meta-llama/Llama-4-Scout-17B-16E-Instruct', mirror: 'unsloth/Llama-4-Scout-17B-16E-Instruct', label: 'Llama 4 Scout' },
+  { repo: 'meta-llama/Llama-4-Maverick-17B-128E-Instruct', mirror: 'unsloth/Llama-4-Maverick-17B-128E-Instruct', label: 'Llama 4 Maverick' },
+  { repo: 'google/gemma-3-27b-it', mirror: 'unsloth/gemma-3-27b-it', label: 'Gemma 3 27B (sliding window)' },
+];
+
+const token =
+  process.env['HF_TOKEN'] ??
+  (await readFile(join(homedir(), '.cache', 'huggingface', 'token'), 'utf8').then((t) => t.trim()).catch(() => undefined));
+const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+const outDir = join(import.meta.dirname, '..', 'src', 'core', 'model', 'presets');
+
+async function getJson(url: string): Promise<unknown> {
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`${res.status} ${url}`);
+  return res.json();
+}
+
+async function tryJson(url: string): Promise<unknown> {
+  try {
+    return await getJson(url);
+  } catch {
+    return undefined;
+  }
+}
+
+function slug(repo: string): string {
+  return repo.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+}
+
+await mkdir(outDir, { recursive: true });
+const index: { repo: string; label: string; file: string }[] = [];
+for (const p of PRESETS) {
+  // Prefer the original repo (works for gated repos when the token has access); fall back to the mirror.
+  let src = p.repo;
+  try {
+    let config: unknown;
+    try {
+      config = await getJson(`https://huggingface.co/${src}/resolve/main/config.json`);
+    } catch (e) {
+      if (!p.mirror) throw e;
+      src = p.mirror;
+      config = await getJson(`https://huggingface.co/${src}/resolve/main/config.json`);
+    }
+    const hfQuantConfig = await tryJson(`https://huggingface.co/${src}/resolve/main/hf_quant_config.json`);
+    const api = (await tryJson(
+      `https://huggingface.co/api/models/${src}?expand[]=safetensors&expand[]=gated`,
+    )) as { safetensors?: { parameters: Record<string, number>; total: number }; gated?: unknown } | undefined;
+    const file = `${slug(p.repo)}.json`;
+    const snapshot = {
+      repo: p.repo,
+      source: src,
+      label: p.label,
+      fetchedAt: new Date().toISOString().slice(0, 10),
+      gated: (api?.gated ?? false) !== false || !!p.mirror,
+      safetensors: api?.safetensors,
+      config,
+      ...(hfQuantConfig ? { hfQuantConfig } : {}),
+    };
+    await writeFile(join(outDir, file), JSON.stringify(snapshot, null, 1) + '\n');
+    index.push({ repo: p.repo, label: p.label, file });
+    console.log(`ok   ${p.repo}`);
+  } catch (e) {
+    console.log(`FAIL ${p.repo}: ${(e as Error).message}`);
+  }
+}
+// Static index (Node needs explicit JSON import attributes; no bundler globbing in core).
+const ident = (f: string) => 'p_' + f.replace(/\.json$/, '').replace(/[^a-z0-9]/g, '_');
+const lines = [
+  '// Generated by scripts/fetch-presets.ts — do not edit.',
+  "import type { PresetSnapshot } from '../presets.ts';",
+  ...index.map((p) => `import ${ident(p.file)} from './${p.file}' with { type: 'json' };`),
+  '',
+  'export const PRESET_SNAPSHOTS: PresetSnapshot[] = [',
+  ...index.map((p) => `  ${ident(p.file)} as PresetSnapshot,`),
+  '];',
+  '',
+];
+await writeFile(join(outDir, 'index.ts'), lines.join('\n'));
+console.log(`${index.length}/${PRESETS.length} presets written to ${outDir}`);

@@ -1,0 +1,51 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": [
+    "typescript",
+    "react",
+    "import"
+  ],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "react/react-in-jsx-scope": "off",
+    "no-restricted-imports": "off",
+    "import/no-unassigned-import": "off",
+    "import/no-named-as-default-member": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/core/**"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "patterns": [
+              "react",
+              "react-dom",
+              "three",
+              "@react-three/*",
+              "zustand",
+              "../../ui/*",
+              "../../scene/*",
+              "../../state/*",
+              "../../sim/*"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "src/scene/**"
+      ],
+      "rules": {
+        "react/immutability": "off"
+      }
+    }
+  ]
+}

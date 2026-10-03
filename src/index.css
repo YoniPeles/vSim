@@ -1,0 +1,124 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'IBM Plex Sans Condensed', 'Arial Narrow', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --color-ink: #0d1926;
+  --color-panel: #112233;
+  --color-panel-2: #152a3e;
+  --color-rule: #223a52;
+  --color-text: #d8e3ec;
+  --color-muted: #8ca1b4;
+  --color-faint: #5d7489;
+  --color-focus: #9cc8ff;
+
+  --color-weights: #d95926;
+  --color-activations: #9085e9;
+  --color-overhead: #c98500;
+  --color-kv: #199e70;
+  --color-tp: #3987e5;
+  --color-ep: #d55181;
+  --color-pp: #c98500;
+  --color-kvx: #199e70;
+  --color-error: #ff6b6b;
+  --color-warn: #ffc54d;
+}
+
+:root {
+  color-scheme: dark;
+  font-family: var(--font-sans);
+  font-feature-settings: 'tnum' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-ink);
+  color: var(--color-text);
+}
+
+body {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 1px;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Native form controls styled to match the panels. */
+.ctl {
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  color: var(--color-text);
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 13px;
+  min-width: 0;
+}
+.ctl:hover {
+  border-color: #33536f;
+}
+select.ctl {
+  appearance: none;
+  padding-right: 20px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%),
+    linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 11px) 52%,
+    calc(100% - 7px) 52%;
+  background-size:
+    4px 4px,
+    4px 4px;
+  background-repeat: no-repeat;
+}
+
+input[type='range'].range {
+  accent-color: var(--color-kv);
+  width: 100%;
+}
+
+.tooltip {
+  background: rgba(13, 25, 38, 0.92);
+  border: 1px solid var(--color-rule);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--color-text);
+  white-space: nowrap;
+  font-family: var(--font-sans);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+.tooltip-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: #2a4560 transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* uPlot cursor in the panel palette. */
+.vsim-chart .u-cursor-x,
+.vsim-chart .u-cursor-y {
+  border-color: #5d7489 !important;
+}
