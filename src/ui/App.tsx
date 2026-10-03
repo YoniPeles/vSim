@@ -18,16 +18,20 @@ function SceneLegend() {
   const moe = model.layers.some((l) => l.ffn.kind === 'moe');
   return (
     <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-1.5rem)] flex-wrap gap-x-4 gap-y-1 rounded bg-[#0d1926cc] px-3 py-2 text-[12px] text-muted backdrop-blur-sm">
-      <span className="text-text">Tower: GPU memory</span>
+      <span className="text-text">HBM stacks: GPU memory</span>
       {MEMORY_LEGEND.map((l) => (
         <span key={l.key} className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ background: l.color, opacity: l.key === 'kvFree' ? 0.45 : 1 }} />
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-[2px]"
+            style={{ background: l.key === 'kvFree' ? `repeating-linear-gradient(135deg, ${l.color}aa 0 2px, ${l.color}33 2px 4px)` : l.color }}
+          />
           {l.label}
         </span>
       ))}
       <span className="basis-full" />
       <span className="text-text">
-        Plates: layers held{moe ? ', stripes = resident experts (orange = live load)' : ''}
+        Hologram: a line per layer held, bright = this GPU's TP share
+        {moe ? ', cells = its experts (brighter = busier)' : ''}
       </span>
       {TRAFFIC_LEGEND.map((l) => (
         <span key={l.key} className="flex items-center gap-1">
@@ -35,6 +39,7 @@ function SceneLegend() {
           {l.label}
         </span>
       ))}
+      <span className="text-faint">Double-click a GPU to fly to it, Esc to return</span>
     </div>
   );
 }

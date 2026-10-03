@@ -24,12 +24,12 @@ export const C = {
   pp: '#c98500',
   kvx: '#199e70',
 
-  // model anatomy (luminance steps, not hues)
-  attnFull: '#91a6b9',
-  attnLocal: '#6f879c',
-  attnLinear: '#5f7d92',
-  ffnDense: '#687b8d',
-  moeA: '#a39573',
+  // model anatomy: the light of the layer hologram (near-white tints in luminance steps, not hues)
+  attnFull: '#cfe1f2',
+  attnLocal: '#a5bdd4',
+  attnLinear: '#8aa7c2',
+  ffnDense: '#c9c2b4',
+  moeA: '#ecd3a2',
   moeB: '#6a6150',
 
   error: '#ff6b6b',

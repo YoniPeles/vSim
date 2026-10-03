@@ -31,15 +31,18 @@ export interface PlateVisual {
   inst: number;
   stage: number;
   layer: number;
+  /** Bottom of the wafer (world y) and its thickness. */
   y: number;
   h: number;
-  /** Slice in tile-local x (−0.5..0.5). */
-  x0: number;
-  x1: number;
+  /** This GPU's tensor-parallel slice of the layer, as a fraction of the layer width (0..1). */
+  tpLo: number;
+  tpHi: number;
   attn: 'full' | 'local' | 'linear';
   moe: boolean;
-  /** Whole experts resident (EP) → one stripe each; −1 = every expert TP-sharded (hatched). */
-  stripes: number;
+  /** Expert FFN held as whole experts (EP): the FFN half spans the full wafer, one cell per expert. */
+  ffnWhole: boolean;
+  /** Whole experts resident (EP) → one cell each; −1 = every expert TP-sharded (hatched); 0 = dense. */
+  cells: number;
   /** Global id of the first resident expert (EP). */
   expertLo: number;
 }
@@ -54,6 +57,8 @@ export interface LinkVisual {
   /** Which instance's traffic this link carries, and whether it crosses the network. */
   inst: number;
   inter: boolean;
+  /** GPU at the near end, for links that attach to a scale-up switch. */
+  gpu: number;
   from: Vec3;
   ctrl: Vec3;
   to: Vec3;
@@ -108,23 +113,41 @@ export function kvInUse(v: InstanceView, i: number): number {
   return Math.min(v.ev.memory.perRank[i]!.kv, per * v.steady.batch);
 }
 
+/** Vertical pitch between adjacent layers in the stack, and the y of a layer's bottom. */
+export const layerStep = (layers: number) => (TOWER_H - 0.1) / Math.max(1, layers);
+export const layerY = (layer: number, layers: number) => 0.14 + layer * layerStep(layers);
+
 export function plateVisuals(model: ModelSpec, gpus: GpuVisual[], views: InstanceView[]): PlateVisual[] {
   const L = model.layers.length;
-  const step = (TOWER_H - 0.1) / L;
+  const step = layerStep(L);
   const out: PlateVisual[] = [];
   for (const g of gpus) {
     const sh = g.shard;
     if (!sh) continue;
     const inst = views[g.instance]!.ev.inst;
-    const w = (STACK.x1 - STACK.x0) / inst.tp;
-    const x0 = STACK.x0 + sh.tpRank * w;
+    const tpLo = sh.tpRank / inst.tp;
+    const tpHi = (sh.tpRank + 1) / inst.tp;
     for (let i = sh.layerLo; i < sh.layerHi; i++) {
       const l = model.layers[i]!;
       const a = l.attn;
       const attn = a.kind === 'linear' ? 'linear' : a.kind === 'gqa' && a.scope !== 'full' ? 'local' : 'full';
       const moe = l.ffn.kind === 'moe';
-      const stripes = !moe ? 0 : sh.experts ? sh.experts.count : -1;
-      out.push({ gpu: g.gpu, inst: g.instance, stage: sh.ppRank, layer: i, y: 0.14 + i * step, h: step * 0.62, x0, x1: x0 + w * (inst.tp > 1 ? 0.9 : 1), attn, moe, stripes, expertLo: sh.experts?.lo ?? 0 });
+      const cells = !moe ? 0 : sh.experts ? sh.experts.count : -1;
+      out.push({
+        gpu: g.gpu,
+        inst: g.instance,
+        stage: sh.ppRank,
+        layer: i,
+        y: layerY(i, L),
+        h: Math.max(0.005, step * 0.3),
+        tpLo,
+        tpHi,
+        attn,
+        moe,
+        ffnWhole: cells > 0,
+        cells,
+        expertLo: sh.experts?.lo ?? 0,
+      });
     }
   }
   return out;
@@ -136,6 +159,8 @@ export function linkVisuals(layout: Layout, views: InstanceView[], kvxUtil: numb
   const slot = (g: number) => layout.gpus[g];
   const spineY = layout.spine ? layout.spine.center.y : TOWER_H + 1.4;
   const spineZ = layout.spine ? layout.spine.center.z : 0;
+  const stackX = (STACK.x0 + STACK.x1) / 2;
+  const towerX = (TOWER.x0 + TOWER.x1) / 2;
   views.forEach((v, inst) => {
     const s = v.steady;
     if (!s || !v.cost) return;
@@ -145,26 +170,39 @@ export function linkVisuals(layout: Layout, views: InstanceView[], kvxUtil: numb
     const soBW = v.cost.comm.soBW / v.cost.calib.etaScaleOut;
     const util = (bytes: number, bw: number) => (bw > 0 ? (bytes * inflight) / interval / bw : 0);
     const c = s.step.comm;
+    const L = v.cost.model.layers.length;
     for (const sh of v.ev.placement.shards) {
       const p = slot(sh.gpu);
       if (!p) continue;
       const tpU = util(c.tp.intra, suBW);
       const epU = util(c.ep.intra, suBW);
       const interU = util(c.tp.inter + c.ep.inter, soBW);
-      if (layout.meshEdges.length === 0 && layout.switches.length) {
-        const top = lift(p.pos, TOWER_H + 0.05);
-        const mid = { x: (top.x + p.switchPort.x) / 2, y: (top.y + p.switchPort.y) / 2, z: (top.z + p.switchPort.z) / 2 };
-        const base = { inst, inter: false, ctrl: mid };
-        if (tpU > 0) out.push({ ...base, kind: 'tp', from: top, to: p.switchPort, util: tpU });
-        if (tpU > 0) out.push({ ...base, kind: 'tp', from: p.switchPort, to: top, util: tpU });
-        if (epU > 0) out.push({ ...base, kind: 'ep', from: p.switchPort, to: top, util: epU });
-        if (epU > 0) out.push({ ...base, kind: 'ep', from: top, to: p.switchPort, util: epU });
+      if (layout.meshEdges.length === 0 && p.switchIdx >= 0) {
+        // Four lanes per spoke (TP and MoE, each way), side by side across the spoke's direction.
+        const top = { x: p.pos.x + stackX, y: TOWER_H + 0.05, z: p.pos.z };
+        const port = p.switchPort;
+        let px = -(port.z - top.z);
+        let pz = port.x - top.x;
+        const n = Math.hypot(px, pz);
+        if (n < 1e-3) [px, pz] = [1, 0];
+        else [px, pz] = [px / n, pz / n];
+        const lane = (off: number, a: Vec3, b: Vec3) => {
+          const from = { x: a.x + px * off, y: a.y, z: a.z + pz * off };
+          const to = { x: b.x + px * off, y: b.y, z: b.z + pz * off };
+          return { from, to, ctrl: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2, z: (from.z + to.z) / 2 } };
+        };
+        const base = { inst, inter: false, gpu: sh.gpu };
+        if (tpU > 0) out.push({ ...base, kind: 'tp', ...lane(-0.05, top, port), util: tpU });
+        if (tpU > 0) out.push({ ...base, kind: 'tp', ...lane(-0.022, port, top), util: tpU });
+        if (epU > 0) out.push({ ...base, kind: 'ep', ...lane(0.022, port, top), util: epU });
+        if (epU > 0) out.push({ ...base, kind: 'ep', ...lane(0.05, top, port), util: epU });
       }
       if (interU > 0) {
         const top = { x: p.nic.x, y: spineY, z: spineZ };
         const ctrl = { x: p.nic.x, y: spineY * 0.7, z: (p.nic.z + spineZ) / 2 };
-        out.push({ kind: c.ep.inter > c.tp.inter ? 'ep' : 'tp', inst, inter: true, from: p.nic, ctrl, to: top, util: interU });
-        out.push({ kind: c.ep.inter > c.tp.inter ? 'ep' : 'tp', inst, inter: true, from: top, ctrl, to: p.nic, util: interU });
+        const kind = c.ep.inter > c.tp.inter ? 'ep' : 'tp';
+        out.push({ kind, inst, inter: true, gpu: sh.gpu, from: p.nic, ctrl, to: top, util: interU });
+        out.push({ kind, inst, inter: true, gpu: sh.gpu, from: top, ctrl, to: p.nic, util: interU });
       }
     }
     if (layout.meshEdges.length) {
@@ -173,26 +211,28 @@ export function linkVisuals(layout: Layout, views: InstanceView[], kvxUtil: numb
       const active = new Set(v.ev.placement.shards.map((x) => x.gpu));
       for (const [a, b] of layout.meshEdges) {
         if (!active.has(a) || !active.has(b)) continue;
-        const pa = lift(slot(a)!.pos, 0.18);
-        const pb = lift(slot(b)!.pos, 0.18);
+        const [pa, pb] = meshEnds(slot(a)!.pos, slot(b)!.pos);
         const mid = { x: (pa.x + pb.x) / 2, y: 0.5, z: (pa.z + pb.z) / 2 };
-        if (tpU > 0) out.push({ kind: 'tp', inst, inter: false, from: pa, ctrl: mid, to: pb, util: tpU });
-        if (epU > 0) out.push({ kind: 'ep', inst, inter: false, from: pb, ctrl: mid, to: pa, util: epU });
+        if (tpU > 0) out.push({ kind: 'tp', inst, inter: false, gpu: a, from: pa, ctrl: mid, to: pb, util: tpU });
+        if (epU > 0) out.push({ kind: 'ep', inst, inter: false, gpu: b, from: pb, ctrl: mid, to: pa, util: epU });
       }
     }
-    // Pipeline hand-offs arc over the boards from stage s to s+1.
+    // Pipeline hand-offs: activations leave the top of stage s's layers and enter the bottom of stage s+1's.
     const ppU = util(c.pp.intra + c.pp.inter, c.pp.inter > 0 ? soBW : suBW);
+    const shardOf = new Map(v.ev.placement.shards.map((x) => [x.gpu, x]));
     for (const l of v.ev.placement.ppLinks) {
       const a = slot(l.from);
       const b = slot(l.to);
-      if (!a || !b) continue;
-      const from = lift(a.pos, TOWER_H * 0.9);
-      const to = lift(b.pos, TOWER_H * 0.2);
-      const ctrl = { x: (from.x + to.x) / 2, y: TOWER_H + 1.2, z: (from.z + to.z) / 2 };
-      out.push({ kind: 'pp', inst, inter: c.pp.inter > 0, from, ctrl, to, util: Math.max(0.05, ppU) });
+      const sa = shardOf.get(l.from);
+      const sb = shardOf.get(l.to);
+      if (!a || !b || !sa || !sb) continue;
+      const from = { x: a.pos.x + stackX, y: layerY(sa.layerHi, L), z: a.pos.z };
+      const to = { x: b.pos.x + stackX, y: layerY(sb.layerLo, L), z: b.pos.z };
+      const ctrl = { x: (from.x + to.x) / 2, y: Math.max(from.y, to.y) + 0.9, z: (from.z + to.z) / 2 };
+      out.push({ kind: 'pp', inst, inter: c.pp.inter > 0, gpu: l.from, from, ctrl, to, util: Math.max(0.05, ppU) });
     }
   });
-  // Disaggregated prefill → decode KV transfer.
+  // Disaggregated prefill → decode KV transfer: from one HBM column to another.
   if (views.length > 1 && kvxUtil > 0) {
     const pre = views[0]!.ev.placement.shards;
     const dec = views[1]!.ev.placement.shards;
@@ -200,16 +240,26 @@ export function linkVisuals(layout: Layout, views: InstanceView[], kvxUtil: numb
       const a = slot(sh.gpu);
       const b = slot(dec[i % dec.length]!.gpu);
       if (!a || !b) return;
-      const from = lift(a.pos, 0.3);
-      const to = lift(b.pos, 0.3);
+      const from = { x: a.pos.x + towerX, y: 0.12 + TOWER_H + 0.04, z: a.pos.z };
+      const to = { x: b.pos.x + towerX, y: 0.12 + TOWER_H + 0.04, z: b.pos.z };
       const ctrl = { x: (from.x + to.x) / 2, y: TOWER_H + 2.2, z: (from.z + to.z) / 2 - 1 };
-      out.push({ kind: 'kvx', inst: 0, inter: true, from, ctrl, to, util: kvxUtil });
+      out.push({ kind: 'kvx', inst: 0, inter: true, gpu: sh.gpu, from, ctrl, to, util: kvxUtil });
     });
   }
   return out;
 }
 
-const lift = (p: Vec3, dy: number): Vec3 => ({ x: p.x, y: p.y + dy, z: p.z });
+/** Ends of a GPU-to-GPU mesh link: on each package's edge, facing the peer. */
+export function meshEnds(a: Vec3, b: Vec3): [Vec3, Vec3] {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const n = Math.hypot(dx, dz) || 1;
+  const r = 0.44;
+  return [
+    { x: a.x + (dx / n) * r, y: 0.16, z: a.z + (dz / n) * r },
+    { x: b.x - (dx / n) * r, y: 0.16, z: b.z - (dz / n) * r },
+  ];
+}
 
 /** Particle density (0..1) for a link at a given utilization. */
 export function intensity(util: number): number {

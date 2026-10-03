@@ -26,6 +26,8 @@ export interface GpuSlot {
   switchPort: Vec3;
   /** NIC uplink start (back edge of the board). */
   nic: Vec3;
+  /** Index into `Layout.switches` of the scale-up switch this GPU hangs off, or −1 (mesh / single GPU). */
+  switchIdx: number;
 }
 
 export interface Box {
@@ -100,6 +102,7 @@ export function layoutCluster(c: ClusterSpec): Layout {
     if (nvl) {
       // Switch spine down the middle (z), trays on both sides.
       switches.push({ domain: d, center: v(cx, SWITCH_Y, cz), size: v(0.5, 0.14, domainD - 0.6) });
+      const sw = switches.length - 1;
       const traysPerSide = Math.ceil(nodesHere / 2);
       for (let n = 0; n < nodesHere; n++) {
         const node = d * nodesPerDomain + n;
@@ -118,6 +121,7 @@ export function layoutCluster(c: ClusterSpec): Layout {
             pos: v(gx, 0.12, tz),
             switchPort: v(cx + side * 0.25, SWITCH_Y, tz),
             nic: v(gx, 0.12, tz + (TILE / 2) * 0.9),
+            switchIdx: sw,
           });
           gpu++;
         }
@@ -132,7 +136,8 @@ export function layoutCluster(c: ClusterSpec): Layout {
           center: v(cx, 0, bz),
           size: v(domainW - 0.3, 0.06, rows * PITCH + (rows > 1 ? 0.7 : 0.5)),
         });
-        if (c.scaleUp !== 'mesh' && perNode > 1) {
+        const sw = c.scaleUp !== 'mesh' && perNode > 1 ? switches.length : -1;
+        if (sw >= 0) {
           switches.push({
             domain: d,
             center: v(cx, SWITCH_Y, bz),
@@ -163,6 +168,7 @@ export function layoutCluster(c: ClusterSpec): Layout {
             pos: v(gx, 0.12, gz),
             switchPort: mesh ? v(gx, 0.12, gz) : v(gx, SWITCH_Y, bz + toward * 0.08),
             nic: v(gx, 0.12, gz - TILE / 2),
+            switchIdx: sw,
           });
           gpu++;
         }
@@ -173,7 +179,9 @@ export function layoutCluster(c: ClusterSpec): Layout {
 
   // Bounds before the spine.
   const min = v(Infinity, 0, Infinity);
-  const max = v(-Infinity, SWITCH_Y + 0.3, -Infinity);
+  // Without a switch or spine overhead the scene ends at the top of the memory columns.
+  const overhead = switches.length > 0 || c.nodes > 1 || domains > 1;
+  const max = v(-Infinity, overhead ? SWITCH_Y + 0.3 : TOWER_H + 0.3, -Infinity);
   for (const p of platforms) {
     min.x = Math.min(min.x, p.center.x - p.size.x / 2);
     max.x = Math.max(max.x, p.center.x + p.size.x / 2);
