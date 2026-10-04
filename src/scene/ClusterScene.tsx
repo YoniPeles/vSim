@@ -13,7 +13,7 @@ import { totalGpus } from '../core/hardware/clusters.ts';
 import { Buses, Decals, Floor, FLOOR_Y, HitTargets, OVERLAY_LAYER, Packages, Sky, Trays } from './hardware.tsx';
 import { HbmColumns } from './memory.tsx';
 import { LayerStacks } from './hologram.tsx';
-import { Comets, Wiring } from './traffic.tsx';
+import { LinkLines, Wiring } from './traffic.tsx';
 import { FloorLabels, GpuTooltip, GroupOutlines, SelectionMarkers, type GroupRect } from './annotations.tsx';
 import { prefersReducedMotion } from './instancing.ts';
 
@@ -89,8 +89,8 @@ export function ClusterScene() {
       const run = useTrace.getState().run;
       if (run) {
         // Step trace: only the link family of the current phase lights up.
-        const i = phaseAt(run, performance.now() / 1000);
-        const k = i >= 0 ? run.phases[i]!.kind : null;
+        const i = phaseAt(run);
+        const k = run.phases[i]!.kind;
         if (l.inst !== run.inst) return 0;
         if (k === 'tp') return l.kind === 'tp' ? 1 : 0;
         if (k === 'dispatch' || k === 'combine') return l.kind === 'ep' ? 1 : 0;
@@ -128,7 +128,7 @@ export function ClusterScene() {
   const layerHeat = useMemo(() => {
     return (out: Float32Array) => {
       const run = useTrace.getState().run;
-      const i = run ? phaseAt(run, performance.now() / 1000) : -1;
+      const i = run ? phaseAt(run) : -1;
       if (!run || i < 0) {
         out.fill(0);
         return -1;
@@ -233,12 +233,12 @@ export function ClusterScene() {
       <Sky horizon={VOID} zenith={ZENITH} />
       <fog attach="fog" args={[VOID, radius * 2.4, radius * 7 + 20]} />
       <ambientLight intensity={0.35} />
-      <directionalLight position={[8, 14, 10]} intensity={1.1} />
+      <directionalLight position={[8, 14, 10]} intensity={0.85} />
       <directionalLight position={[-10, 6, -8]} intensity={0.5} color={'#9fc3ff'} />
       <Environment resolution={64} frames={1}>
-        <Lightformer form="rect" intensity={2.2} color="#cfe3ff" position={[0, 6, 0]} rotation-x={Math.PI / 2} scale={[12, 3, 1]} />
-        <Lightformer form="rect" intensity={1.2} color="#7fa6d6" position={[-6, 2, 4]} rotation-y={Math.PI / 3} scale={[6, 1.2, 1]} />
-        <Lightformer form="rect" intensity={0.8} color="#ffd9b0" position={[6, 1.5, -4]} rotation-y={-Math.PI / 2.5} scale={[5, 1, 1]} />
+        <Lightformer form="rect" intensity={1.2} color="#cfe3ff" position={[0, 6, 0]} rotation-x={Math.PI / 2} scale={[12, 3, 1]} />
+        <Lightformer form="rect" intensity={0.7} color="#7fa6d6" position={[-6, 2, 4]} rotation-y={Math.PI / 3} scale={[6, 1.2, 1]} />
+        <Lightformer form="rect" intensity={0.45} color="#ffd9b0" position={[6, 1.5, -4]} rotation-y={-Math.PI / 2.5} scale={[5, 1, 1]} />
       </Environment>
 
       <Floor bounds={layout.bounds} reflect={quality === 2} />
@@ -248,8 +248,8 @@ export function ClusterScene() {
       <HbmColumns layout={layout} gpus={gpus} liveKv={liveKv} motion={motion} />
       <LayerStacks layout={layout} plates={plates} model={d.model} heat={layerHeat} experts={expertLoad} />
       <Buses boxes={busBoxes} level={busLevel} />
-      <Wiring layout={layout} links={links} />
-      <Comets links={links} level={level} levels={levels} speed={motion ? 1 : 0.25} />
+      <Wiring layout={layout} />
+      <LinkLines links={links} level={level} levels={levels} />
       <GroupOutlines rects={outlines} scale={Math.min(2.2, Math.max(1, radius / 4.5))} />
       <FloorLabels layout={layout} />
       <SelectionMarkers layout={layout} hovered={hovered} selected={selected} motion={motion} />
@@ -267,9 +267,9 @@ export function ClusterScene() {
       <OrbitControls makeDefault enableDamping dampingFactor={0.12} maxPolarAngle={Math.PI * 0.47} />
       <CameraRig bounds={layout.bounds} center={center} focus={focusGpu !== null ? layout.gpus[focusGpu]?.pos ?? null : null} motion={motion} />
       {/* Always composite through a linear half-float target: additive light (hologram, glass,
-          comets) must sum in linear space, or it blows out. The lowest tier drops bloom and MSAA. */}
+          link lines) must sum in linear space, or it blows out. The lowest tier drops bloom and MSAA. */}
       <EffectComposer key={quality > 0 ? 'fx' : 'lite'} multisampling={quality > 0 ? 4 : 0}>
-        {quality > 0 ? <Bloom luminanceThreshold={0.7} luminanceSmoothing={0.3} intensity={0.75} radius={0.72} mipmapBlur /> : <></>}
+        {quality > 0 ? <Bloom luminanceThreshold={0.9} luminanceSmoothing={0.25} intensity={0.3} radius={0.5} mipmapBlur /> : <></>}
         <Vignette offset={0.3} darkness={0.55} />
       </EffectComposer>
     </Canvas>

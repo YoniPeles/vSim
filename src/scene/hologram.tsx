@@ -22,15 +22,18 @@ function attnKind(model: ModelSpec, i: number): 'full' | 'local' | 'linear' {
   return a.kind === 'linear' ? 'linear' : a.kind === 'gqa' && a.scope !== 'full' ? 'local' : 'full';
 }
 
+/** Overall brightness of the hologram light (additive wafers stack up, so keep this modest). */
+const HOLO_GAIN = 0.4;
+
 /** Per-layer light: row 0 attention, row 1 FFN. */
 function layerTexture(model: ModelSpec): THREE.DataTexture {
   const L = model.layers.length;
   const data = new Float32Array(L * 2 * 4);
   const attnColor = { full: C.attnFull, local: C.attnLocal, linear: C.attnLinear } as const;
   for (let i = 0; i < L; i++) {
-    col.set(attnColor[attnKind(model, i)]);
+    col.set(attnColor[attnKind(model, i)]).multiplyScalar(HOLO_GAIN);
     data.set([col.r, col.g, col.b, 1], i * 4);
-    col.set(model.layers[i]!.ffn.kind === 'moe' ? C.moeA : C.ffnDense);
+    col.set(model.layers[i]!.ffn.kind === 'moe' ? C.moeA : C.ffnDense).multiplyScalar(HOLO_GAIN);
     data.set([col.r, col.g, col.b, 1], (L + i) * 4);
   }
   const t = new THREE.DataTexture(data, L, 2, THREE.RGBAFormat, THREE.FloatType);

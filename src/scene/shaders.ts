@@ -139,8 +139,8 @@ export function stackShellMaterial(): THREE.ShaderMaterial {
         float heat = layerHeat(li, vInst, attn) * held;
         // A thin tensor-parallel share glows harder than a whole layer, so it still reads at a glance.
         float boost = mix(1.35, 1.0, lit.y - lit.x);
-        vec3 col = base * line * mix(0.05, mix(0.3, 0.9 * boost, inS), held);
-        col += SCAN * heat * scanLine * mix(0.9, 3.0, inS);
+        vec3 col = base * line * mix(0.04, mix(0.25, 0.75 * boost, inS), held);
+        col += SCAN * heat * scanLine * mix(0.6, 1.8, inS);
         // The hologram's outline: light gathers along the vertical edges of the volume, like a prism's.
         vec2 fc = fb ? vL.xy : vL.zy;
         float de = (0.5 - abs(fc.x)) / max(fwidth(fc.x), 1e-5);
@@ -244,7 +244,7 @@ export function waferMaterial(): THREE.ShaderMaterial {
           mask = mix(0.3, mask, smoothstep(2.5, 6.0, pxPerCell)) * step(idx, n - 0.5) * inS;
           float load = uExpertOn > 0.5 ? texture2D(uExperts, vec2((vExp.y + idx + 0.5) / uExpertCount, 0.5)).r : 0.0;
           vec3 c = mix(base, SCAN, load);
-          col += cap ? c * mask * (0.16 + load * 1.6) : c * uFace * mask * (0.8 + load * 5.0);
+          col += cap ? c * mask * (0.12 + load * 0.9) : c * uFace * mask * (0.8 + load * 3.0);
         } else if (!attn && vExp.x < -0.5) {
           // Every expert tensor-parallel sharded: a fine hatch over the lit share.
           float s = (u * vSize.x + w * vSize.y) / 0.035;
@@ -252,7 +252,7 @@ export function waferMaterial(): THREE.ShaderMaterial {
           float h = aaLine(abs(fract(s) - 0.5) / fs, 0.5) * (1.0 - smoothstep(0.25, 0.6, fs));
           col += base * (cap ? 0.12 : uFace * 1.2) * h * inS;
         }
-        col += SCAN * heat * mix(0.1, 0.55, inS);
+        col += SCAN * heat * mix(0.06, 0.35, inS);
         col *= 1.0 - fogAmount();
         gl_FragColor = vec4(col, 1.0);
         #include <colorspace_fragment>
@@ -345,11 +345,11 @@ export function hbmFillMaterial(): THREE.ShaderMaterial {
             float grid = aaLine(min(e.x, e.y), 0.5) * (1.0 - smoothstep(0.12, 0.3, max(fg.x, fg.y)));
             float h = hash12(floor(g) + floor(uTime * 3.0) * 17.0);
             col *= 1.0 - 0.3 * grid;
-            col += c * uShimmer * 0.35 * step(0.82, h);
+            col += c * uShimmer * 0.18 * step(0.82, h);
           }
           // Meniscus: a bright rim where the fill meets the empty glass.
           float dTop = (vBands.w - f) / ff;
-          col += c * 0.9 * aaLine(dTop, 1.0);
+          col += c * 0.5 * aaLine(dTop, 1.0);
         } else {
           col += c * 0.12;
         }
@@ -449,7 +449,7 @@ export function hbmGlassMaterial(): THREE.ShaderMaterial {
           float hatch = aaLine(abs(fract(s) - 0.5) / fsx, 0.55) * (1.0 - smoothstep(0.3, 0.7, fsx));
           col += uColK * inFree * (0.05 + 0.3 * hatch * (gl_FrontFacing ? 1.0 : 0.25));
           // The gpu-memory-utilization line: KV can fill the glass up to here.
-          col += uColK * 0.85 * aaLine(abs(f - vKv.y) / ff, 0.7) * facing;
+          col += uColK * 0.5 * aaLine(abs(f - vKv.y) / ff, 0.7) * facing;
         }
         col *= 1.0 - fogAmount();
         gl_FragColor = vec4(col, 1.0);
@@ -580,11 +580,11 @@ export function busMaterial(): THREE.ShaderMaterial {
         float lvl = clamp(vLevel, 0.0, 1.0);
         float core = exp(-pow(d / (thick * 0.11), 2.0));
         float halo = exp(-pow(d / (thick * 0.4), 2.0));
-        float flow = 0.5 + 0.5 * sin(along * 9.0 - uTime * (1.5 + 6.0 * lvl));
+        float flow = 0.5 + 0.5 * sin(along * 9.0 - uTime * (0.5 + 1.2 * lvl));
         float fres = pow(1.0 - abs(dot(vN, -V)), 2.5);
         vec3 col = vec3(0.012, 0.022, 0.034) + vec3(0.3, 0.45, 0.65) * fres * 0.12;
         vec3 light = vec3(0.7, 0.88, 1.0);
-        col += light * (core * (0.22 + lvl * (0.9 + 0.8 * flow)) + halo * (0.03 + 0.12 * lvl));
+        col += light * (core * (0.1 + lvl * (0.4 + 0.15 * flow)) + halo * (0.015 + 0.05 * lvl));
         // Machined edges catch a little light; the ends stay dark.
         vec2 fc = abs(vN.y) > 0.5 ? vL.xz : abs(vN.z) > 0.5 ? vL.xy : vL.zy;
         vec2 fwc = max(fwidth(fc), vec2(1e-5));
@@ -737,92 +737,41 @@ export function skyMaterial(): THREE.ShaderMaterial {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Traffic comets: screen-aligned streaks travelling along quadratic Bézier links. A per-link
-// intensity texture sets how many of a link's comets are visible, so live utilization changes cost
-// one tiny upload rather than a rebuild.
+// Traffic: each link is a fibre that brightens with its utilization (no moving particles).
+// A per-link level texture (shared with the switch filaments) is sampled per vertex.
 
-export function cometMaterial(): THREE.ShaderMaterial {
+export function linkLineMaterial(): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: { value: 0 },
-      uViewport: { value: new THREE.Vector2(1, 1) },
-      uWidth: { value: 0.024 },
-      uIntensity: { value: null as THREE.DataTexture | null },
-      uLinks: { value: 1 },
-      uGain: { value: 2.2 },
-    },
+    uniforms: { ...fogUniforms(), uLevel: { value: null as THREE.DataTexture | null }, uLinks: { value: 1 } },
+    fog: true,
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */ `
-      attribute vec3 aFrom;
-      attribute vec3 aCtrl;
-      attribute vec3 aTo;
-      attribute float aPhase;
-      attribute float aSpeed;
-      attribute float aTrail;
-      attribute vec3 aColor;
       attribute float aLink;
-      attribute float aRank;
-      uniform sampler2D uIntensity;
+      attribute vec3 aColor;
+      uniform sampler2D uLevel;
       uniform float uLinks;
-      uniform float uTime;
-      uniform float uWidth;
-      uniform vec2 uViewport;
       varying vec3 vColor;
-      varying vec2 vUv;
-      varying float vLenPx;
-      varying float vWidth;
-      varying float vFade;
-      vec3 bez(float t) {
-        float s = 1.0 - t;
-        return s * s * aFrom + 2.0 * s * t * aCtrl + t * t * aTo;
-      }
+      varying float vK;
+      #include <fog_pars_vertex>
       void main() {
-        float k = texture2D(uIntensity, vec2((aLink + 0.5) / uLinks, 0.5)).r;
-        float t = fract(uTime * aSpeed + aPhase);
-        vec4 ch = projectionMatrix * viewMatrix * vec4(bez(t), 1.0);
-        vec4 ct = projectionMatrix * viewMatrix * vec4(bez(max(0.0, t - aTrail)), 1.0);
-        if (aRank >= k || ch.w <= 0.05 || ct.w <= 0.05) {
-          gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-          return;
-        }
-        vec2 half_ = 0.5 * uViewport;
-        vec2 h = ch.xy / ch.w * half_;
-        vec2 tl = ct.xy / ct.w * half_;
-        vec2 d = h - tl;
-        float len = length(d);
-        vec2 dir = len > 1e-3 ? d / len : vec2(1.0, 0.0);
-        vec2 nrm = vec2(-dir.y, dir.x);
-        float width = clamp(uWidth * projectionMatrix[1][1] * half_.y / ch.w, 1.0, 5.0);
-        float x = position.x;
-        vec2 sp = mix(tl, h, x) + dir * (x * 2.0 - 1.0) * width + nrm * position.y * width;
-        float z = mix(ct.z / ct.w, ch.z / ch.w, x);
-        gl_Position = vec4(sp / half_, z, 1.0);
-        vUv = vec2(x, position.y);
-        vLenPx = len;
-        vWidth = width;
         vColor = aColor;
-        vFade = smoothstep(0.0, 0.1, t) * smoothstep(1.0, 0.85, t);
+        vK = texture2D(uLevel, vec2((aLink + 0.5) / uLinks, 0.5)).r;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform float uGain;
       varying vec3 vColor;
-      varying vec2 vUv;
-      varying float vLenPx;
-      varying float vWidth;
-      varying float vFade;
+      varying float vK;
+      ${FOG_FRAG}
       void main() {
-        // Position along the streak in pixels, from the tail (0) to the head (vLenPx), caps included.
-        float total = vLenPx + 2.0 * vWidth;
-        float along = vUv.x * total - vWidth;
-        float across = abs(vUv.y);
-        float body = (1.0 - smoothstep(0.15, 1.0, across)) * pow(clamp(along / max(vLenPx, 1.0), 0.0, 1.0), 1.6);
-        float dh = length(vec2((along - vLenPx) / vWidth, vUv.y));
-        float head = exp(-dh * dh * 2.2);
-        float i = (body * 0.65 + head * 1.5) * vFade * uGain;
-        gl_FragColor = vec4(vColor * i, 1.0);
+        // A faint path always; the colour comes up with traffic.
+        vec3 col = vColor * (0.08 + 0.62 * clamp(vK, 0.0, 1.0));
+        col *= 1.0 - fogAmount();
+        gl_FragColor = vec4(col, 1.0);
         #include <colorspace_fragment>
       }
     `,

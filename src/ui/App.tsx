@@ -33,6 +33,7 @@ function SceneLegend() {
         Hologram: a line per layer held, bright = this GPU's TP share
         {moe ? ', cells = its experts (brighter = busier)' : ''}
       </span>
+      <span className="text-text">Links brighten with traffic:</span>
       {TRAFFIC_LEGEND.map((l) => (
         <span key={l.key} className="flex items-center gap-1">
           <span className="inline-block h-2 w-2 rounded-full" style={{ background: l.color }} />

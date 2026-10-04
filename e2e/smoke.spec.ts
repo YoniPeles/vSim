@@ -40,6 +40,7 @@ test('runs the scheduler simulation in a worker and streams frames', async ({ pa
   await expect(page.getByText(/t = [1-9]\d*\.\d s/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/\d+ requests done/)).toBeVisible({ timeout: 15_000 });
   await page.getByRole('button', { name: 'Trace one step' }).click();
-  await expect(page.getByText(/GPU time, slowed down/)).toBeVisible();
+  await expect(page.getByText(/GPU time, .* slower than real/)).toBeVisible();
+  await page.getByRole('button', { name: 'Pause' }).first().click();
   expect(errors).toEqual([]);
 });
